@@ -5,11 +5,19 @@
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     py::class_<Decoder>(m, "Decoder")
-        .def(py::init<const std::string&, bool, int, int>(),
+        .def(py::init<const std::string&, bool, int, int, bool, int, int, int, int, int, int, int>(),
              py::arg("filename"),
-             py::arg("enable_frame_skip") = false,
-             py::arg("output_width")      = 0,
-             py::arg("output_height")     = 0)
+             py::arg("enable_frame_skip")  = false,
+             py::arg("output_width")       = 0,
+             py::arg("output_height")      = 0,
+             py::arg("enable_auto_reconnect") = true,
+             py::arg("reconnect_delay_ms") = 10000,
+             py::arg("max_reconnects")     = 0,
+             py::arg("open_timeout_ms")    = 5000,
+             py::arg("read_timeout_ms")    = 5000,
+             py::arg("buffer_size")        = 4 * 1024 * 1024,
+             py::arg("max_delay_ms")       = 200,
+             py::arg("reorder_queue_size") = 0)
         .def("next_frame", &Decoder::next_frame)
         .def("get_width", &Decoder::get_width)
         .def("get_height", &Decoder::get_height)

@@ -28,6 +28,14 @@ class VideoPipe(mp.Process):
             enable_frame_skip=True,
             output_width=1024,
             output_height=576,
+            enable_auto_reconnect=True,
+            reconnect_delay_ms=10000,
+            max_reconnects=0,
+            open_timeout_ms=5000,
+            read_timeout_ms=5000,
+            buffer_size=4 * 1024 * 1024,
+            max_delay_ms=200,
+            reorder_queue_size=32,
         )
 
         encoder = nv.Encoder(

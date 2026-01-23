@@ -4,10 +4,12 @@
 #include <cuda_runtime.h>
 #include <libavutil/rational.h>
 #include <npp.h>
-#include <nppi_geometry_transforms.h>
 #include <nppi_color_conversion.h>
+#include <nppi_geometry_transforms.h>
 
+#include <chrono>
 #include <stdexcept>
+#include <thread>
 
 static enum AVPixelFormat get_hw_format(AVCodecContext* ctx, const enum AVPixelFormat* pix_fmts) {
     const enum AVPixelFormat* p;
@@ -18,11 +20,31 @@ static enum AVPixelFormat get_hw_format(AVCodecContext* ctx, const enum AVPixelF
     throw std::runtime_error("[Decoder] Failed to get HW surface format.");
 }
 
-Decoder::Decoder(const std::string& filename, bool enable_frame_skip_, int output_width, int output_height)
-    : requested_width(output_width),
+Decoder::Decoder(const std::string& filename,
+                 bool               enable_frame_skip_,
+                 int                output_width,
+                 int                output_height,
+                 bool               enable_auto_reconnect,
+                 int                reconnect_delay_ms_,
+                 int                max_reconnects_,
+                 int                open_timeout_ms_,
+                 int                read_timeout_ms_,
+                 int                buffer_size_,
+                 int                max_delay_ms_,
+                 int                reorder_queue_size_)
+    : source_url(filename),
+      requested_width(output_width),
       requested_height(output_height),
       enable_frame_skip(enable_frame_skip_),
-      output_this_frame(true) {
+      output_this_frame(true),
+      enable_reconnect(enable_auto_reconnect),
+      reconnect_delay_ms(reconnect_delay_ms_),
+      max_reconnects(max_reconnects_),
+      open_timeout_ms(open_timeout_ms_),
+      read_timeout_ms(read_timeout_ms_),
+      buffer_size(buffer_size_),
+      max_delay_ms(max_delay_ms_),
+      reorder_queue_size(reorder_queue_size_) {
     init_ffmpeg(filename);
 }
 
@@ -31,9 +53,31 @@ Decoder::~Decoder() {
 }
 
 void Decoder::init_ffmpeg(const std::string& filename) {
-    AVDictionary* opts = nullptr;
+    AVDictionary* opts  = nullptr;
+    is_streaming_source = false;
     if (filename.rfind("rtsp://", 0) == 0) {
+        is_streaming_source = true;
         av_dict_set(&opts, "rtsp_transport", "tcp", 0);
+    }
+    if (filename.rfind("rtp://", 0) == 0) {
+        is_streaming_source = true;
+    }
+
+    if (open_timeout_ms > 0) {
+        av_dict_set(&opts, "stimeout", std::to_string(open_timeout_ms * 1000).c_str(), 0);
+    }
+    if (read_timeout_ms > 0) {
+        av_dict_set(&opts, "rw_timeout", std::to_string(read_timeout_ms * 1000).c_str(), 0);
+    }
+    if (buffer_size > 0) {
+        av_dict_set(&opts, "buffer_size", std::to_string(buffer_size).c_str(), 0);
+        av_dict_set(&opts, "rtbufsize", std::to_string(buffer_size).c_str(), 0);
+    }
+    if (max_delay_ms > 0) {
+        av_dict_set(&opts, "max_delay", std::to_string(max_delay_ms * 1000).c_str(), 0);
+    }
+    if (reorder_queue_size > 0) {
+        av_dict_set(&opts, "reorder_queue_size", std::to_string(reorder_queue_size).c_str(), 0);
     }
 
     if (avformat_open_input(&format_ctx, filename.c_str(), nullptr, &opts) != 0) {
@@ -64,6 +108,9 @@ void Decoder::init_ffmpeg(const std::string& filename) {
     }
     if (frame_rate.num != 0 && frame_rate.den != 0) {
         fps = av_q2d(frame_rate);
+    }
+    if (fps > 0.0) {
+        nominal_frame_delta = 1.0 / fps;
     }
 
     const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
@@ -101,8 +148,9 @@ void Decoder::init_ffmpeg(const std::string& filename) {
         height = decode_height;
     }
 
-    frame  = av_frame_alloc();
-    packet = av_packet_alloc();
+    frame              = av_frame_alloc();
+    packet             = av_packet_alloc();
+    reconnect_attempts = 0;
 }
 
 void Decoder::cleanup() {
@@ -111,6 +159,68 @@ void Decoder::cleanup() {
     if (codec_ctx) avcodec_free_context(&codec_ctx);
     if (format_ctx) avformat_close_input(&format_ctx);
     if (hw_device_ctx) av_buffer_unref(&hw_device_ctx);
+}
+
+bool Decoder::try_reconnect() {
+    if (!enable_reconnect || !is_streaming_source) return false;
+    while (max_reconnects == 0 || reconnect_attempts < max_reconnects) {
+        reconnect_attempts += 1;
+        cleanup();
+        flushing          = false;
+        finished          = false;
+        output_this_frame = true;
+        last_input_pts    = -1.0;
+        if (nominal_frame_delta <= 0.0 && fps > 0.0) {
+            nominal_frame_delta = 1.0 / fps;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(reconnect_delay_ms));
+        try {
+            init_ffmpeg(source_url);
+            return true;
+        } catch (const std::exception&) {
+            continue;
+        }
+    }
+    return false;
+}
+
+double Decoder::align_pts(double pts) {
+    double expected = nominal_frame_delta > 0.0 ? nominal_frame_delta : (fps > 0.0 ? 1.0 / fps : 0.04);
+    if (pts < 0.0) {
+        if (last_output_pts < 0.0) {
+            last_output_pts = 0.0;
+        } else {
+            last_output_pts += expected;
+        }
+        return last_output_pts;
+    }
+    if (last_input_pts < 0.0) {
+        last_input_pts = pts;
+        if (last_output_pts < 0.0) {
+            last_output_pts = 0.0;
+        } else {
+            last_output_pts += expected;
+        }
+        pts_offset = last_output_pts - pts;
+        return last_output_pts;
+    }
+    double raw_delta = pts - last_input_pts;
+    if (raw_delta <= 0.0) {
+        raw_delta = expected;
+    }
+    double tol       = max_delay_ms > 0 ? (max_delay_ms / 1000.0) : (expected * 2.0);
+    double min_delta = expected - tol;
+    if (min_delta < 0.0) min_delta = 0.0;
+    double max_delta = expected + tol;
+    double clamped   = raw_delta;
+    if (raw_delta < min_delta || raw_delta > max_delta) {
+        clamped = expected;
+    }
+    nominal_frame_delta  = expected * 0.98 + clamped * 0.02;
+    last_input_pts       = pts;
+    last_output_pts     += clamped;
+    pts_offset           = last_output_pts - pts;
+    return last_output_pts;
 }
 
 std::pair<torch::Tensor, double> Decoder::next_frame() {
@@ -202,17 +312,22 @@ std::pair<torch::Tensor, double> Decoder::next_frame() {
                 continue;
             }
             output_this_frame = enable_frame_skip ? false : true;
-            
-            double pts = 0.0;
-            if (frame->pts != AV_NOPTS_VALUE) {
+
+            double  pts     = -1.0;
+            int64_t best_ts = frame->best_effort_timestamp;
+            if (best_ts != AV_NOPTS_VALUE) {
                 AVRational tb = format_ctx->streams[video_stream_idx]->time_base;
-                pts = frame->pts * av_q2d(tb);
+                pts           = best_ts * av_q2d(tb);
             }
-            
+            pts = align_pts(pts);
+
             torch::Tensor out = process_frame(frame);
             av_frame_unref(frame);
             return {out, pts};
         } else if (ret == AVERROR_EOF) {
+            if (try_reconnect()) {
+                continue;
+            }
             finished = true;
             return {torch::Tensor(), -1.0};
         } else if (ret != AVERROR(EAGAIN)) {
@@ -226,6 +341,9 @@ std::pair<torch::Tensor, double> Decoder::next_frame() {
 
         ret = av_read_frame(format_ctx, packet);
         if (ret < 0) {
+            if (try_reconnect()) {
+                continue;
+            }
             flushing = true;
             avcodec_send_packet(codec_ctx, nullptr);
             continue;
