@@ -26,14 +26,20 @@ Minimizes memory copies and CPU–GPU data transfers for maximum efficiency
 
 1. 环境准备
 
-   推荐 docker 运行，不推荐自己本地装环境
+   Docker >= 24.0.0
+
+   NVIDIA Driver >= 590
+
+   NVIDIA Container Toolkit >= 1.13.0
+
+   服务器满足以上三个条件，推荐 docker 容器运行（不推荐自己本地装环境）
 
    ```bash
    cd docker
    docker build -t PyNvVideoPipe:cuda12.6 .
    ```
 
-   镜像生成后，进入容器，不报错即成功
+   镜像生成后，进入容器，不报错即成功，后面示例默认容器内运行
 
    ```bash
    docker run -it --gpus all -e NVIDIA_DRIVER_CAPABILITIES=all \
@@ -75,5 +81,4 @@ Minimizes memory copies and CPU–GPU data transfers for maximum efficiency
 
 ### License
 
-[BSD 2 Clause](https://github.com/lmk123568/PyNvVideoPipe/blob/main/LICENSE)
-
+[Apache 2.0](https://github.com/lmk123568/PyNvVideoPipe/blob/main/LICENSE)
