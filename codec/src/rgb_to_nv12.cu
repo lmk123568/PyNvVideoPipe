@@ -47,10 +47,19 @@ __global__ void rgb_to_nv12_kernel(const uint8_t* src, int srcStep, uint8_t* dst
     }
 }
 
-void rgb_to_nv12(const uint8_t* src, int srcStep, uint8_t* dstY, int dstYStep, uint8_t* dstUV, int dstUVStep, int width, int height) {
+void rgb_to_nv12(const uint8_t* src,
+                 int            srcStep,
+                 uint8_t*       dstY,
+                 int            dstYStep,
+                 uint8_t*       dstUV,
+                 int            dstUVStep,
+                 int            width,
+                 int            height,
+                 void*          stream) {
     dim3 block(32, 32);
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
 
-    rgb_to_nv12_kernel<<<grid, block>>>(src, srcStep, dstY, dstYStep, dstUV, dstUVStep, width, height);
+    cudaStream_t s = stream ? static_cast<cudaStream_t>(stream) : nullptr;
+    rgb_to_nv12_kernel<<<grid, block, 0, s>>>(src, srcStep, dstY, dstYStep, dstUV, dstUVStep, width, height);
     // cudaDeviceSynchronize(); // Optional, but safer to debug
 }

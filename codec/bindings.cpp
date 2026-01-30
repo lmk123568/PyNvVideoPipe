@@ -52,8 +52,9 @@ PYBIND11_MODULE(MODULE_NAME, m) {
              py::arg("reorder_queue_size")    = 0,
              py::arg("decoder_threads")       = 2,
              py::arg("surfaces")              = 2,
-             py::arg("hwaccel")               = "cuda")
-        .def("next_frame", &Decoder::next_frame)
+             py::arg("hwaccel")               = "cuda",
+             py::call_guard<py::gil_scoped_release>())
+        .def("next_frame", &Decoder::next_frame, py::call_guard<py::gil_scoped_release>())
         .def("get_width", &Decoder::get_width)
         .def("get_height", &Decoder::get_height)
         .def("get_fps", &Decoder::get_fps);
@@ -68,6 +69,6 @@ PYBIND11_MODULE(MODULE_NAME, m) {
              py::arg("fps"),
              py::arg("codec")   = "h264",
              py::arg("bitrate") = 2000000)
-        .def("encode", &Encoder::encode, py::arg("frame"), py::arg("pts") = -1.0)
-        .def("finish", &Encoder::finish);
+        .def("encode", &Encoder::encode, py::arg("frame"), py::arg("pts") = -1.0, py::call_guard<py::gil_scoped_release>())
+        .def("finish", &Encoder::finish, py::call_guard<py::gil_scoped_release>());
 }
