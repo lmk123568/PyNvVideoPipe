@@ -2,6 +2,7 @@
 
 #include "src/Decoder.h"
 #include "src/Encoder.h"
+#include "src/Yolo26Trt.h"
 
 #define MODULE_NAME nv_accel
 
@@ -71,4 +72,17 @@ PYBIND11_MODULE(MODULE_NAME, m) {
              py::arg("bitrate") = 2000000)
         .def("encode", &Encoder::encode, py::arg("frame"), py::arg("pts") = -1.0, py::call_guard<py::gil_scoped_release>())
         .def("finish", &Encoder::finish, py::call_guard<py::gil_scoped_release>());
+
+    py::class_<Yolo26DetTRT>(m, "Yolo26DetTRT")
+        .def(py::init<std::string, float, int>(),
+             py::arg("engine_path"),
+             py::arg("conf_thres") = 0.25f,
+             py::arg("device_id")  = 0,
+             py::call_guard<py::gil_scoped_release>())
+        .def("__call__", &Yolo26DetTRT::infer, py::arg("image_hwc_u8"), py::call_guard<py::gil_scoped_release>())
+        .def("infer", &Yolo26DetTRT::infer, py::arg("image_hwc_u8"), py::call_guard<py::gil_scoped_release>())
+        .def("input_shape", &Yolo26DetTRT::input_shape)
+        .def("output_shapes", &Yolo26DetTRT::output_shapes)
+        .def("input_names", &Yolo26DetTRT::input_names)
+        .def("output_names", &Yolo26DetTRT::output_names);
 }

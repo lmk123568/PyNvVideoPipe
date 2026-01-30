@@ -43,10 +43,14 @@ for pkg in ffmpeg_packages:
 # Remove duplicates
 include_dirs = list(set(include_dirs))
 library_dirs = list(set(library_dirs))
+libraries.extend(["nvinfer", "nvinfer_plugin"])
 libraries = list(set(libraries))
 
+if "/lib/x86_64-linux-gnu" not in library_dirs:
+    library_dirs.append("/lib/x86_64-linux-gnu")
+
 rpath_dirs = []
-for p in library_paths():
+for p in library_paths() + library_dirs:
     if p not in rpath_dirs:
         rpath_dirs.append(p)
 
@@ -67,12 +71,14 @@ setup(
                 "cpp/src/Decoder.cpp",
                 "cpp/src/Encoder.cpp",
                 "cpp/src/rgb_to_nv12.cu",
+                "cpp/src/Yolo26Trt.cpp",
+                "cpp/src/preprocess.cu",
                 "cpp/bindings.cpp",
             ],
             include_dirs=include_dirs,
             library_dirs=library_dirs,
             libraries=libraries,
-            extra_compile_args={"cxx": ["-std=c++17"], "nvcc": ["-O3"]},
+            extra_compile_args={"cxx": ["-std=c++17"], "nvcc": ["-O3", "-std=c++17"]},
             extra_link_args=extra_link_args,
         )
     ],
