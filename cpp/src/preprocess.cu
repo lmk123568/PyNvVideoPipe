@@ -7,7 +7,7 @@
 namespace {
 
 template <typename OutT>
-__global__ void rgb_u8_hwc_to_nchw_norm_kernel(
+__global__ void bgr_u8_hwc_to_rgb_nchw_norm_kernel(
     const uint8_t* __restrict__ input,
     int                      height,
     int                      width,
@@ -20,9 +20,9 @@ __global__ void rgb_u8_hwc_to_nchw_norm_kernel(
     if (x >= width || y >= height) return;
 
     int64_t in_base = y * in_row_stride + x * 3;
-    uint8_t r       = input[in_base + 0];
+    uint8_t b       = input[in_base + 0];
     uint8_t g       = input[in_base + 1];
-    uint8_t b       = input[in_base + 2];
+    uint8_t r       = input[in_base + 2];
 
     float rf = static_cast<float>(r) * (1.0f / 255.0f);
     float gf = static_cast<float>(g) * (1.0f / 255.0f);
@@ -35,7 +35,7 @@ __global__ void rgb_u8_hwc_to_nchw_norm_kernel(
 }
 
 template <>
-__global__ void rgb_u8_hwc_to_nchw_norm_kernel<at::Half>(
+__global__ void bgr_u8_hwc_to_rgb_nchw_norm_kernel<at::Half>(
     const uint8_t* __restrict__ input,
     int                      height,
     int                      width,
@@ -48,9 +48,9 @@ __global__ void rgb_u8_hwc_to_nchw_norm_kernel<at::Half>(
     if (x >= width || y >= height) return;
 
     int64_t in_base = y * in_row_stride + x * 3;
-    uint8_t r       = input[in_base + 0];
+    uint8_t b       = input[in_base + 0];
     uint8_t g       = input[in_base + 1];
-    uint8_t b       = input[in_base + 2];
+    uint8_t r       = input[in_base + 2];
 
     __half rf = __float2half(static_cast<float>(r) * (1.0f / 255.0f));
     __half gf = __float2half(static_cast<float>(g) * (1.0f / 255.0f));
@@ -64,7 +64,7 @@ __global__ void rgb_u8_hwc_to_nchw_norm_kernel<at::Half>(
 
 }  // namespace
 
-void preprocess_rgb_u8_hwc_to_nchw(torch::Tensor input_hwc_u8, torch::Tensor output_nchw) {
+void preprocess_bgr_u8_hwc_to_rgb_nchw(torch::Tensor input_hwc_u8, torch::Tensor output_nchw) {
     TORCH_CHECK(input_hwc_u8.is_cuda(), "input must be CUDA tensor");
     TORCH_CHECK(output_nchw.is_cuda(), "output must be CUDA tensor");
     TORCH_CHECK(input_hwc_u8.dtype() == torch::kUInt8, "input must be uint8");
@@ -92,7 +92,7 @@ void preprocess_rgb_u8_hwc_to_nchw(torch::Tensor input_hwc_u8, torch::Tensor out
     cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
 
     if (output_nchw.dtype() == torch::kFloat16) {
-        rgb_u8_hwc_to_nchw_norm_kernel<at::Half><<<grid, block, 0, stream>>>(
+        bgr_u8_hwc_to_rgb_nchw_norm_kernel<at::Half><<<grid, block, 0, stream>>>(
             input_ptr,
             height,
             width,
@@ -101,7 +101,7 @@ void preprocess_rgb_u8_hwc_to_nchw(torch::Tensor input_hwc_u8, torch::Tensor out
             out_c_stride,
             out_row_stride);
     } else if (output_nchw.dtype() == torch::kFloat32) {
-        rgb_u8_hwc_to_nchw_norm_kernel<float><<<grid, block, 0, stream>>>(
+        bgr_u8_hwc_to_rgb_nchw_norm_kernel<float><<<grid, block, 0, stream>>>(
             input_ptr,
             height,
             width,

@@ -70,8 +70,8 @@ setup(
             [
                 "cpp/src/Decoder.cpp",
                 "cpp/src/Encoder.cpp",
-                "cpp/src/rgb_to_nv12.cu",
-                "cpp/src/Yolo26Trt.cpp",
+                "cpp/src/bgr_to_nv12.cu",
+                "cpp/src/Yolo26DetTRT.cpp",
                 "cpp/src/preprocess.cu",
                 "cpp/bindings.cpp",
             ],

@@ -2,5 +2,4 @@
 
 #include <torch/extension.h>
 
-void preprocess_rgb_u8_hwc_to_nchw(torch::Tensor input_hwc_u8, torch::Tensor output_nchw);
-
+void preprocess_bgr_u8_hwc_to_rgb_nchw(torch::Tensor input_hwc_u8, torch::Tensor output_nchw);

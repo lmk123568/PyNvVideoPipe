@@ -2,7 +2,7 @@
 
 #include "src/Decoder.h"
 #include "src/Encoder.h"
-#include "src/Yolo26Trt.h"
+#include "src/Yolo26DetTRT.h"
 
 #define MODULE_NAME nv_accel
 

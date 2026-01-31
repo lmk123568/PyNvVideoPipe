@@ -249,34 +249,36 @@ std::pair<torch::Tensor, double> Decoder::next_frame() {
             return torch::Tensor();
         }
 
-        cudaStream_t stream            = c10::cuda::getCurrentCUDAStream().stream();
-        NppStatus    npp_stream_status = nppSetStream(stream);
+        cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
+        NppStreamContext npp_stream_ctx;
+        NppStatus npp_stream_status = nppGetStreamContext(&npp_stream_ctx);
         if (npp_stream_status != NPP_SUCCESS) {
-            throw std::runtime_error("[Decoder] nppSetStream failed: " + std::to_string(npp_stream_status));
+            throw std::runtime_error("[Decoder] nppGetStreamContext failed: " + std::to_string(npp_stream_status));
         }
+        npp_stream_ctx.hStream = stream;
 
         auto          options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA).layout(torch::kStrided);
-        torch::Tensor rgb     = torch::empty({decode_height, decode_width, 3}, options);
+        torch::Tensor bgr     = torch::empty({decode_height, decode_width, 3}, options);
         const Npp8u*  pSrc[2];
         pSrc[0]           = (const Npp8u*)f->data[0];
         pSrc[1]           = (const Npp8u*)f->data[1];
         int      nSrcStep = f->linesize[0];
-        Npp8u*   pDst     = rgb.data_ptr<uint8_t>();
+        Npp8u*   pDst     = bgr.data_ptr<uint8_t>();
         int      nDstStep = decode_width * 3;
         NppiSize oSizeROI;
         oSizeROI.width   = decode_width;
         oSizeROI.height  = decode_height;
-        NppStatus status = nppiNV12ToRGB_8u_P2C3R(pSrc, nSrcStep, pDst, nDstStep, oSizeROI);
+        NppStatus status = nppiNV12ToBGR_8u_P2C3R_Ctx(pSrc, nSrcStep, pDst, nDstStep, oSizeROI, npp_stream_ctx);
         if (status != NPP_SUCCESS) {
             throw std::runtime_error("[Decoder] NPP conversion failed: " + std::to_string(status));
         }
 
         if (width == decode_width && height == decode_height) {
-            return rgb;
+            return bgr;
         }
 
         torch::Tensor resized    = torch::empty({height, width, 3}, options);
-        const Npp8u*  pResizeSrc = rgb.data_ptr<uint8_t>();
+        const Npp8u*  pResizeSrc = bgr.data_ptr<uint8_t>();
         Npp8u*        pResizeDst = resized.data_ptr<uint8_t>();
 
         NppiSize srcSize;
@@ -300,7 +302,7 @@ std::pair<torch::Tensor, double> Decoder::next_frame() {
         double xFactor = static_cast<double>(width) / static_cast<double>(decode_width);
         double yFactor = static_cast<double>(height) / static_cast<double>(decode_height);
 
-        NppStatus resize_status = nppiResizeSqrPixel_8u_C3R(
+        NppStatus resize_status = nppiResizeSqrPixel_8u_C3R_Ctx(
             pResizeSrc,
             srcSize,
             srcStep,
@@ -312,7 +314,8 @@ std::pair<torch::Tensor, double> Decoder::next_frame() {
             yFactor,
             0.0,
             0.0,
-            NPPI_INTER_LINEAR);
+            NPPI_INTER_LINEAR,
+            npp_stream_ctx);
         if (resize_status != NPP_SUCCESS) {
             throw std::runtime_error("[Decoder] NPP resize failed: " + std::to_string(resize_status));
         }
@@ -377,3 +380,4 @@ std::pair<torch::Tensor, double> Decoder::next_frame() {
         }
     }
 }
+

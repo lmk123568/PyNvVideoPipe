@@ -16,50 +16,49 @@ class VideoPipe(torch.multiprocessing.Process):
 
     def run(self):
         # Import hardware-accelerated codec and YOLO detection model
-        from codec import nv_accel
-        from scripts.models import YOLO26DetTRT
+        import nv_accel
 
         # Initialize CUDA-based video decoder with desired resolution and reconnection settings
         decoder = nv_accel.Decoder(
             self.input_url,
-            enable_frame_skip=False,          # Ensure every frame is decoded
+            enable_frame_skip=False,  # Ensure every frame is decoded
             output_width=1024,
             output_height=576,
-            enable_auto_reconnect=True,       # Auto-reconnect on network interruption
-            reconnect_delay_ms=10000,       # Wait 10s before each reconnection attempt
-            max_reconnects=0,               # Unlimited reconnection attempts
-            open_timeout_ms=5000,           # Timeout for opening the stream
-            read_timeout_ms=5000,           # Timeout for reading packets
-            buffer_size=4 * 1024 * 1024,    # 4MB buffer for jitter tolerance
-            max_delay_ms=200,               # Max allowed decoding delay
-            reorder_queue_size=32,          # B-frame reorder queue length
-            decoder_threads=2,              # Number of decoder threads
-            surfaces=2,                     # Number of CUDA surfaces for buffering
-            hwaccel="cuda",                 # Use NVIDIA hardware acceleration
+            enable_auto_reconnect=True,  # Auto-reconnect on network interruption
+            reconnect_delay_ms=10000,  # Wait 10s before each reconnection attempt
+            max_reconnects=0,  # Unlimited reconnection attempts
+            open_timeout_ms=5000,  # Timeout for opening the stream
+            read_timeout_ms=5000,  # Timeout for reading packets
+            buffer_size=4 * 1024 * 1024,  # 4MB buffer for jitter tolerance
+            max_delay_ms=200,  # Max allowed decoding delay
+            reorder_queue_size=32,  # B-frame reorder queue length
+            decoder_threads=2,  # Number of decoder threads
+            surfaces=2,  # Number of CUDA surfaces for buffering
+            hwaccel="cuda",  # Use NVIDIA hardware acceleration
         )
 
         # Initialize CUDA-based H.264 encoder matching decoder's resolution
-        encoder = nv_accel.Encoder(
-            output_url=self.output_url,
-            width=decoder.get_width(),
-            height=decoder.get_height(),
-            fps=25.0,
-            codec="h264",
-            bitrate=1_000_000,              # 1 Mbps target bitrate
-        )
+        # encoder = nv_accel.Encoder(
+        #     output_url=self.output_url,
+        #     width=decoder.get_width(),
+        #     height=decoder.get_height(),
+        #     fps=25.0,
+        #     codec="h264",
+        #     bitrate=1_000_000,  # 1 Mbps target bitrate
+        # )
 
-        # Load TensorRT-optimized YOLOv2.6 nano model for object detection
-        yolo = YOLO26DetTRT(
-            weights="./yolo26/yolo26n_1x3x576x1024_fp16.engine",
-            device="cuda",
-            conf_thres=0.25,                # Confidence threshold for detections
+        # Load TensorRT-optimized YOLOv26 nano model for object detection
+        yolo = nv_accel.Yolo26DetTRT(
+            engine_path="./yolo26n_1x3x576x1024_fp16.engine",
+            device_id=0,
+            conf_thres=0.25,  # Confidence threshold for detections
         )
 
         # Supervision annotators and tracker for visualization
-        box_annotator = sv.BoxAnnotator()
-        label_annotator = sv.LabelAnnotator()
-        tracker = sv.ByteTrack()
-        trace_annotator = sv.TraceAnnotator()
+        # box_annotator = sv.BoxAnnotator()
+        # label_annotator = sv.LabelAnnotator()
+        # tracker = sv.ByteTrack()
+        # trace_annotator = sv.TraceAnnotator()
 
         # Frame counter for profiling
         frame_count = 0
@@ -87,48 +86,56 @@ class VideoPipe(torch.multiprocessing.Process):
 
             # Run YOLO inference on GPU tensor
             det_results = yolo(frame)
+
+            # Additional models can be added for secondary inference
+            # Ensure every model's inputs and outputs remain GPU tensors
+            # Avoid CPU <-> GPU transfers during model inference
+            # eg:
+            # cls_results = cls(frame)
+            # seg_results = seg(frame)
+
             t2 = time.time()  # End of detection stage
 
-            # Convert GPU tensor to numpy and build supervision.Detections
-            det_results = det_results.cpu().numpy()
-            det_results = sv.Detections(
-                xyxy=det_results[:, :4],
-                confidence=det_results[:, 4],
-                class_id=det_results[:, 5].astype(int),
-            )
-            # Update tracker with current detections
-            tracker_results = tracker.update_with_detections(det_results)
+            # # Convert GPU tensor to numpy and build supervision.Detections
+            # det_results = det_results.cpu().numpy()
+            # det_results = sv.Detections(
+            #     xyxy=det_results[:, :4],
+            #     confidence=det_results[:, 4],
+            #     class_id=det_results[:, 5].astype(int),
+            # )
+            # # Update tracker with current detections
+            # tracker_results = tracker.update_with_detections(det_results)
             t3 = time.time()  # End of tracking stage
 
-            # Move frame back to CPU for annotation
-            annotated_frame = frame.cpu().numpy()
+            # # Move frame back to CPU for annotation
+            # annotated_frame = frame.cpu().numpy()
 
-            # Build label text: tracker_id + class_id
-            labels = [
-                f"#{tracker_id} {class_id}"
-                for class_id, tracker_id in zip(
-                    tracker_results.class_id, tracker_results.tracker_id
-                )
-            ]
+            # # Build label text: tracker_id + class_id
+            # labels = [
+            #     f"#{tracker_id} {class_id}"
+            #     for tracker_id, class_id in zip(
+            #         tracker_results.tracker_id, tracker_results.class_id
+            #     )
+            # ]
 
-            # Draw boxes, traces and labels on the frame
-            annotated_frame = box_annotator.annotate(
-                scene=annotated_frame, detections=tracker_results
-            )
-            annotated_frame = trace_annotator.annotate(
-                scene=annotated_frame, detections=tracker_results
-            )
-            annotated_frame = label_annotator.annotate(
-                scene=annotated_frame, detections=tracker_results, labels=labels
-            )
+            # # Draw boxes, traces and labels on the frame
+            # annotated_frame = box_annotator.annotate(
+            #     scene=annotated_frame, detections=tracker_results
+            # )
+            # annotated_frame = trace_annotator.annotate(
+            #     scene=annotated_frame, detections=tracker_results
+            # )
+            # annotated_frame = label_annotator.annotate(
+            #     scene=annotated_frame, detections=tracker_results, labels=labels
+            # )
             t4 = time.time()  # End of drawing stage
 
-            # Send annotated frame back to GPU and encode
-            annotated_frame = torch.from_numpy(annotated_frame).to("cuda")
-            encoder.encode(annotated_frame, pts)
+            # # Send annotated frame back to GPU and encode
+            # annotated_frame = torch.from_numpy(annotated_frame).to("cuda")
+            # encoder.encode(annotated_frame, pts)
             t5 = time.time()  # End of encode stage
 
-            # Placeholder for user-defined business logic
+            # Business Logic
             # is_person = event(tracker_results)
             # if is_person:
             #     print("Person detected!")
@@ -162,6 +169,7 @@ class VideoPipe(torch.multiprocessing.Process):
                 sum_event = 0
                 sum_wait = 0
 
+
 if __name__ == "__main__":
     # You can move this list into a separate YAML file and load it with PyYAML or similar.
     # Example:
@@ -171,22 +179,22 @@ if __name__ == "__main__":
     args = [
         {
             "gpu": 0,
-            "input_url": "rtsp://172.16.3.210:8554/live/172.60.34.164",
+            "input_url": "rtsp://172.16.3.210:8554/live/172.16.3.107",
             "output_url": "rtmp://172.16.3.210:1935/live/test_outq1",
         },
         {
             "gpu": 0,
-            "input_url": "rtsp://172.16.3.210:8554/live/172.60.34.164",
+            "input_url": "rtsp://172.16.3.210:8554/live/172.16.3.107",
             "output_url": "rtmp://172.16.3.210:1935/live/test_outq2",
         },
         {
             "gpu": 0,
-            "input_url": "rtsp://172.16.3.210:8554/live/172.60.34.164",
+            "input_url": "rtsp://172.16.3.210:8554/live/172.16.3.107",
             "output_url": "rtmp://172.16.3.210:1935/live/test_outq3",
         },
         {
             "gpu": 0,
-            "input_url": "rtsp://172.16.3.210:8554/live/172.60.34.164",
+            "input_url": "rtsp://172.16.3.210:8554/live/172.16.3.107",
             "output_url": "rtmp://172.16.3.210:1935/live/test_outq4",
         },
     ]

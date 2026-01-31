@@ -1,4 +1,4 @@
-#include "Yolo26Trt.h"
+#include "Yolo26DetTRT.h"
 
 #include <NvInferPlugin.h>
 #include <NvInferVersion.h>
@@ -192,7 +192,7 @@ torch::Tensor Yolo26DetTRT::infer(torch::Tensor image_hwc_u8) {
 
     c10::cuda::CUDAGuard guard(image_hwc_u8.device());
 
-    preprocess_rgb_u8_hwc_to_nchw(image_hwc_u8, input_tensor_);
+    preprocess_bgr_u8_hwc_to_rgb_nchw(image_hwc_u8, input_tensor_);
 
     cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
 

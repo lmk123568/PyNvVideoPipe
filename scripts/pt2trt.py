@@ -99,10 +99,9 @@ if __name__ == "__main__":
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     import nv_accel
 
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    img_rgb = torch.as_tensor(img_rgb.copy(), device=torch.device(args.device))
+    img_bgr = torch.as_tensor(img_bgr.copy(), device=torch.device(args.device))
     our_model = nv_accel.Yolo26DetTRT(engine_path=f, conf_thres=0.25, device_id=0)
-    our_bboxes = our_model(img_rgb)[:, :4].cpu().numpy()
+    our_bboxes = our_model(img_bgr)[:, :4].cpu().numpy()
 
     print(f"==> trt_bboxes:\n {trt_bboxes}")
     print(f"==> our_bboxes:\n {our_bboxes}")

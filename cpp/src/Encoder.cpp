@@ -7,7 +7,7 @@
 #include <iostream>
 #include <stdexcept>
 
-#include "rgb_to_nv12.h"
+#include "bgr_to_nv12.h"
 
 Encoder::Encoder(const std::string& filename, int width, int height, int fps, std::string codec, int bitrate)
     : filename(filename), width(width), height(height), fps(fps), bitrate(bitrate) {
@@ -198,7 +198,7 @@ void Encoder::encode(torch::Tensor tensor, double pts) {
         cudaEventDestroy(ev);
     }
 
-    rgb_to_nv12(pSrc, nSrcStep, pDstY, nDstYStep, pDstUV, nDstUVStep, width, height, encode_stream);
+    bgr_to_nv12(pSrc, nSrcStep, pDstY, nDstYStep, pDstUV, nDstUVStep, width, height, encode_stream);
 
     if (pts >= 0) {
         // pts is in seconds
