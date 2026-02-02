@@ -75,8 +75,9 @@ python scripts/setup.py install
 python scripts/pt2trt.py  --w ./yolo26n.pt --fp16
 ```
 
+ 转换过程中会与 ultralytics 官方结果进行推理对齐
+
 > 💡 TensorRT 编译生成 .engine 过程中，推理尺寸默认设置为`(576,1024)`，可以跳过`letterbox`降低计算开销
-> 💡 转换过程中会进行推理结果对齐
 
 ### 4. 运行
 
