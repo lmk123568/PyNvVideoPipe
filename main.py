@@ -164,7 +164,7 @@ class Pipeline(mp.Process):
                 # Report average latency every 1000 frames
                 if frame_count == 1000:
                     print(
-                        f"[{time.strftime('%m/%d/%Y-%H:%M:%S', time.localtime())}] VideoPipe: {self.input_url}, "
+                        f"[{time.strftime('%m/%d/%Y-%H:%M:%S', time.localtime())}] Pipeline: {self.input_url}, "
                         f"Det: {sum_det:.2f}ms, "
                         f"Track: {sum_track:.2f}ms, "
                         f"Draw: {sum_draw:.2f}ms, "
