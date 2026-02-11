@@ -12,6 +12,8 @@
 
 PyVideoProc 提供基于 CUDA 加速优化的高性能 Python SDK，可高效实现多路、多卡、多模型的视频解码、AI 推理与编码，显著降低开发复杂度并提升吞吐性能
 
+https://github.com/user-attachments/assets/402f9080-004e-457e-8d36-3fefdb56f21d
+
 ⭐ 多进程绕过 GIL 限制，提升 Python 并发性能
 
 ⭐ 减少 Host-Device 数据传输，降低 GPU 显存冗余拷贝，提升推理速度
@@ -109,7 +111,7 @@ python main.py
 | VideoPipe（ffmpeg codec） | 511.6 % | 1.5 GiB | 2677 MiB | 16 %         |
 | Our                       | 40 %    | 1.2GiB  | 3932 MiB | 12 %         |
 
-https://github.com/user-attachments/assets/1d434634-befb-4173-af75-a96284fccfda
+> 工程不是追求完美的数学解，而是在资源受限、时间紧迫、需求模糊的情况下，寻找一个可用的最优解
 
 ## Pipeline
 
