@@ -12,7 +12,7 @@
 
 PyVideoProc 提供基于 CUDA 加速优化的高性能 Python SDK，可高效实现多路、多卡、多模型的视频解码、AI 推理与编码，显著降低开发复杂度并提升吞吐性能
 
-https://github.com/user-attachments/assets/402f9080-004e-457e-8d36-3fefdb56f21d
+[https://github.com/user-attachments/assets/402f9080-004e-457e-8d36-3fefdb56f21d](https://github.com/user-attachments/assets/bb12981c-ac43-40c8-a802-983671356646)
 
 ⭐ 多进程绕过 GIL 限制，提升 Python 并发性能
 
