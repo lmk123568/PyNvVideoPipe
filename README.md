@@ -35,7 +35,7 @@ PyVideoProc provides a high-performance Python SDK optimized with CUDA accelerat
 
 🔗 Bilibili: [https://www.bilibili.com/video/BV12TcvzbEcZ](https://www.bilibili.com/video/BV12TcvzbEcZ) 
 
-🔗 YouTube: [https://youtu.be/WxI5h8QDFiE](https://youtu.be/WxI5h8QDFiE)
+🔗 YouTube: [https://youtu.be/-soVRjH1rb4](https://youtu.be/-soVRjH1rb4)
 
 ## Quick Start
 
