@@ -6,8 +6,25 @@
 
 #include <iostream>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include "bgr_to_nv12.h"
+
+extern "C" {
+#include <libavutil/error.h>
+#include <libswscale/swscale.h>
+}
+
+namespace {
+
+std::string ff_err(int ret) {
+    char buf[AV_ERROR_MAX_STRING_SIZE];
+    av_strerror(ret, buf, sizeof(buf));
+    return std::string(buf);
+}
+
+}  // namespace
 
 Encoder::Encoder(const std::string& filename, int width, int height, int fps, std::string codec, int bitrate)
     : filename(filename), width(width), height(height), fps(fps), bitrate(bitrate) {
@@ -21,6 +38,11 @@ Encoder::~Encoder() {
 
 void Encoder::init_ffmpeg(std::string codec) {
     av_log_set_level(AV_LOG_ERROR);
+
+    cleanup();
+    is_finished        = false;
+    frame_index        = 0;
+    ffmpeg_cuda_stream = nullptr;
 
     const char* format_name = nullptr;
     if (filename.find("rtsp://") == 0) {
@@ -37,9 +59,9 @@ void Encoder::init_ffmpeg(std::string codec) {
         throw std::runtime_error("Could not create output context for " + filename);
     }
 
-    const AVCodec* encoder_codec = avcodec_find_encoder_by_name("h264_nvenc");
+    const AVCodec* encoder_codec = avcodec_find_encoder_by_name("libx264");
     if (!encoder_codec) {
-        throw std::runtime_error("h264_nvenc codec not found");
+        throw std::runtime_error("libx264 codec not found");
     }
 
     video_stream = avformat_new_stream(format_ctx, encoder_codec);
@@ -56,10 +78,10 @@ void Encoder::init_ffmpeg(std::string codec) {
     codec_ctx->height       = height;
     codec_ctx->time_base    = {1, fps};
     codec_ctx->framerate    = {fps, 1};
-    codec_ctx->pix_fmt      = AV_PIX_FMT_CUDA;
     codec_ctx->bit_rate     = bitrate;
     codec_ctx->gop_size     = fps;
     codec_ctx->max_b_frames = 0;
+    codec_ctx->pix_fmt      = AV_PIX_FMT_YUV420P;
 
     video_stream->time_base = codec_ctx->time_base;
 
@@ -67,71 +89,55 @@ void Encoder::init_ffmpeg(std::string codec) {
         codec_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
 
-    ret = av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
-    if (ret < 0) {
-        throw std::runtime_error("Failed to create CUDA HW device");
-    }
-
-    {
-        AVHWDeviceContext*   device_ctx      = (AVHWDeviceContext*)hw_device_ctx->data;
-        AVCUDADeviceContext* cuda_device_ctx = device_ctx ? (AVCUDADeviceContext*)device_ctx->hwctx : nullptr;
-        ffmpeg_cuda_stream                  = cuda_device_ctx ? (void*)cuda_device_ctx->stream : nullptr;
-    }
-
-    codec_ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
-
-    AVBufferRef* hw_frames_ref = av_hwframe_ctx_alloc(hw_device_ctx);
-    if (!hw_frames_ref) {
-        throw std::runtime_error("Failed to allocate HW frames context");
-    }
-
-    AVHWFramesContext* frames_ctx = (AVHWFramesContext*)hw_frames_ref->data;
-    frames_ctx->format            = AV_PIX_FMT_CUDA;
-    frames_ctx->sw_format         = AV_PIX_FMT_NV12;
-    frames_ctx->width             = width;
-    frames_ctx->height            = height;
-    frames_ctx->initial_pool_size = 6;
-
-    ret = av_hwframe_ctx_init(hw_frames_ref);
-    if (ret < 0) {
-        av_buffer_unref(&hw_frames_ref);
-        throw std::runtime_error("Failed to initialize HW frames context");
-    }
-
-    codec_ctx->hw_frames_ctx = av_buffer_ref(hw_frames_ref);
-    av_buffer_unref(&hw_frames_ref);
-
     AVDictionary* opts = NULL;
-    av_dict_set(&opts, "preset", "p1", 0);
-    av_dict_set(&opts, "tune", "ull", 0);
-    av_dict_set(&opts, "zerolatency", "1", 0);
-    av_dict_set(&opts, "surfaces", "4", 0);
+    av_dict_set(&opts, "preset", "veryfast", 0);
+    av_dict_set(&opts, "tune", "zerolatency", 0);
+    av_dict_set(&opts, "profile", "baseline", 0);
 
     ret = avcodec_open2(codec_ctx, encoder_codec, &opts);
     av_dict_free(&opts);
     if (ret < 0) {
-        throw std::runtime_error("Could not open codec");
+        throw std::runtime_error("Could not open codec libx264: " + ff_err(ret));
     }
 
     ret = avcodec_parameters_from_context(video_stream->codecpar, codec_ctx);
     if (ret < 0) {
-        throw std::runtime_error("Could not copy stream parameters");
+        throw std::runtime_error("Could not copy stream parameters: " + ff_err(ret));
     }
 
     if (!(format_ctx->oformat->flags & AVFMT_NOFILE)) {
         ret = avio_open(&format_ctx->pb, filename.c_str(), AVIO_FLAG_WRITE);
         if (ret < 0) {
-            throw std::runtime_error("Could not open output file: " + filename);
+            throw std::runtime_error("Could not open output: " + filename + ": " + ff_err(ret));
         }
     }
 
     ret = avformat_write_header(format_ctx, nullptr);
     if (ret < 0) {
-        throw std::runtime_error("Error occurred when opening output file");
+        throw std::runtime_error("Error occurred when opening output: " + ff_err(ret));
     }
 
     frame  = av_frame_alloc();
     packet = av_packet_alloc();
+    if (!frame || !packet) {
+        throw std::runtime_error("Failed to allocate frame/packet");
+    }
+
+    frame->format = codec_ctx->pix_fmt;
+    frame->width  = width;
+    frame->height = height;
+    ret           = av_frame_get_buffer(frame, 32);
+    if (ret < 0) {
+        throw std::runtime_error("Failed to allocate SW frame buffer: " + ff_err(ret));
+    }
+
+    sws_ctx = sws_getContext(
+        width, height, AV_PIX_FMT_BGR24, width, height, codec_ctx->pix_fmt, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+    if (!sws_ctx) {
+        throw std::runtime_error("Failed to create sws context");
+    }
+
+    std::cerr << "[Encoder] Using libx264 for " << filename << std::endl;
 }
 
 void Encoder::cleanup() {
@@ -145,61 +151,50 @@ void Encoder::cleanup() {
         avformat_free_context(format_ctx);
     }
     if (hw_device_ctx) av_buffer_unref(&hw_device_ctx);
+    if (sws_ctx) sws_freeContext(sws_ctx);
+
+    format_ctx        = nullptr;
+    codec_ctx         = nullptr;
+    hw_device_ctx     = nullptr;
+    video_stream      = nullptr;
+    packet            = nullptr;
+    frame             = nullptr;
+    sws_ctx           = nullptr;
+    ffmpeg_cuda_stream = nullptr;
 }
 
 void Encoder::encode(torch::Tensor tensor, double pts) {
-    if (!tensor.is_cuda() || tensor.dtype() != torch::kUInt8) {
-        throw std::runtime_error("Input tensor must be CUDA uint8");
+    if (!codec_ctx || !frame) {
+        throw std::runtime_error("Encoder is not initialized");
     }
 
-    c10::cuda::CUDAGuard device_guard(tensor.device());
+    int ret = 0;
 
-    cudaStream_t torch_stream  = c10::cuda::getCurrentCUDAStream().stream();
-    cudaStream_t encode_stream = ffmpeg_cuda_stream ? (cudaStream_t)ffmpeg_cuda_stream : torch_stream;
-
-    int ret = av_hwframe_get_buffer(codec_ctx->hw_frames_ctx, frame, 0);
-    if (ret < 0) {
-        throw std::runtime_error("Failed to allocate frame from HW pool");
+    if (tensor.dtype() != torch::kUInt8) {
+        throw std::runtime_error("Input tensor must be uint8 for libx264");
+    }
+    if (tensor.is_cuda()) {
+        tensor = tensor.cpu();
+    }
+    if (tensor.dim() != 3 || tensor.size(0) != height || tensor.size(1) != width || tensor.size(2) != 3) {
+        throw std::runtime_error("Input tensor must be HWC uint8 BGR with encoder resolution");
+    }
+    if (!tensor.is_contiguous()) {
+        tensor = tensor.contiguous();
     }
 
     ret = av_frame_make_writable(frame);
     if (ret < 0) {
-        throw std::runtime_error("Frame not writable");
+        throw std::runtime_error("Frame not writable: " + ff_err(ret));
     }
 
-    const uint8_t* pSrc     = tensor.data_ptr<uint8_t>();
-    int            nSrcStep = width * 3;
+    uint8_t* src_slices[1]  = {tensor.data_ptr<uint8_t>()};
+    int      src_strides[1] = {width * 3};
 
-    if (!tensor.is_contiguous()) {
-        tensor = tensor.contiguous();
-        pSrc   = tensor.data_ptr<uint8_t>();
+    int scaled = sws_scale(sws_ctx, src_slices, src_strides, 0, height, frame->data, frame->linesize);
+    if (scaled != height) {
+        throw std::runtime_error("sws_scale failed");
     }
-
-    uint8_t* pDstY      = (uint8_t*)frame->data[0];
-    int      nDstYStep  = frame->linesize[0];
-    uint8_t* pDstUV     = (uint8_t*)frame->data[1];
-    int      nDstUVStep = frame->linesize[1];
-
-    if (encode_stream != torch_stream) {
-        cudaEvent_t ev;
-        cudaError_t err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
-        if (err != cudaSuccess) {
-            throw std::runtime_error(std::string("cudaEventCreateWithFlags failed: ") + cudaGetErrorString(err));
-        }
-        err = cudaEventRecord(ev, torch_stream);
-        if (err != cudaSuccess) {
-            cudaEventDestroy(ev);
-            throw std::runtime_error(std::string("cudaEventRecord failed: ") + cudaGetErrorString(err));
-        }
-        err = cudaStreamWaitEvent(encode_stream, ev, 0);
-        if (err != cudaSuccess) {
-            cudaEventDestroy(ev);
-            throw std::runtime_error(std::string("cudaStreamWaitEvent failed: ") + cudaGetErrorString(err));
-        }
-        cudaEventDestroy(ev);
-    }
-
-    bgr_to_nv12(pSrc, nSrcStep, pDstY, nDstYStep, pDstUV, nDstUVStep, width, height, encode_stream);
 
     if (pts >= 0) {
         // pts is in seconds
@@ -210,16 +205,14 @@ void Encoder::encode(torch::Tensor tensor, double pts) {
 
     ret = avcodec_send_frame(codec_ctx, frame);
     if (ret < 0) {
-        throw std::runtime_error("Error sending frame to encoder");
+        throw std::runtime_error("Error sending frame to encoder: " + ff_err(ret));
     }
-    av_frame_unref(frame);
-
     while (ret >= 0) {
         ret = avcodec_receive_packet(codec_ctx, packet);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
             break;
         } else if (ret < 0) {
-            throw std::runtime_error("Error encoding frame");
+            throw std::runtime_error("Error encoding frame: " + ff_err(ret));
         }
 
         av_packet_rescale_ts(packet, codec_ctx->time_base, video_stream->time_base);

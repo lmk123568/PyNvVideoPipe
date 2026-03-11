@@ -47,7 +47,5 @@ private:
 
     void* ffmpeg_cuda_stream = nullptr;
 
-    // For NPP/CUDA conversion
-    // We might need intermediate buffers if NPP requires it,
-    // but usually we can map pointers directly if strides are aligned.
+    struct SwsContext* sws_ctx = nullptr;
 };

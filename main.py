@@ -22,7 +22,7 @@ class Pipeline(mp.Process):
         # Initialize CUDA-based video decoder with desired resolution and reconnection settings
         decoder = pvp.Decoder(
             self.input_url,
-            enable_frame_skip=False,  # Ensure every frame is decoded
+            enable_frame_skip=False,
             output_width=1024,
             output_height=576,
             enable_auto_reconnect=True,  # Auto-reconnect on network interruption
@@ -38,15 +38,13 @@ class Pipeline(mp.Process):
         )
 
         # Initialize CUDA-based H.264 encoder matching decoder's resolution
-        fps = decoder.get_fps()
-        fps = float(round(fps)) if fps and fps > 0 else 25.0
         encoder = pvp.Encoder(
             output_url=self.output_url,
             width=decoder.get_width(),
             height=decoder.get_height(),
-            fps=fps,
-            codec="h264",
-            bitrate=1_000_000,  # 1 Mbps target bitrate
+            fps=25,
+            codec="libx264",
+            bitrate=1000000,
         )
 
         # Load TensorRT-optimized YOLOv26 nano model for object detection
@@ -142,9 +140,8 @@ class Pipeline(mp.Process):
                 )
                 t4 = time.time()  # End of drawing stage
 
-                # Send annotated frame back to GPU and encode
-                annotated_frame = torch.from_numpy(annotated_frame).to("cuda")
-                encoder.encode(annotated_frame)
+                annotated_frame = torch.from_numpy(annotated_frame)
+                encoder.encode(annotated_frame, pts)
                 t5 = time.time()  # End of encode stage
 
                 # Business Logic

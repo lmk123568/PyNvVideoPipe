@@ -16,6 +16,26 @@
 
 namespace {
 
+void stream_wait(cudaStream_t wait_stream, cudaStream_t signal_stream) {
+    if (wait_stream == signal_stream) return;
+    cudaEvent_t ev;
+    cudaError_t err = cudaEventCreateWithFlags(&ev, cudaEventDisableTiming);
+    if (err != cudaSuccess) {
+        throw std::runtime_error(std::string("cudaEventCreateWithFlags failed: ") + cudaGetErrorString(err));
+    }
+    err = cudaEventRecord(ev, signal_stream);
+    if (err != cudaSuccess) {
+        cudaEventDestroy(ev);
+        throw std::runtime_error(std::string("cudaEventRecord failed: ") + cudaGetErrorString(err));
+    }
+    err = cudaStreamWaitEvent(wait_stream, ev, 0);
+    if (err != cudaSuccess) {
+        cudaEventDestroy(ev);
+        throw std::runtime_error(std::string("cudaStreamWaitEvent failed: ") + cudaGetErrorString(err));
+    }
+    cudaEventDestroy(ev);
+}
+
 torch::ScalarType trt_dtype_to_torch(nvinfer1::DataType dt) {
     switch (dt) {
         case nvinfer1::DataType::kFLOAT:
@@ -192,16 +212,26 @@ torch::Tensor Yolo26DetTRT::infer(torch::Tensor image_hwc_u8) {
 
     c10::cuda::CUDAGuard guard(image_hwc_u8.device());
 
-    preprocess_bgr_u8_hwc_to_rgb_nchw(image_hwc_u8, input_tensor_);
+    auto torch_stream = c10::cuda::getCurrentCUDAStream();
+    auto trt_stream   = c10::cuda::getStreamFromPool(false, image_hwc_u8.device().index());
 
-    cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
+    stream_wait(trt_stream.stream(), torch_stream.stream());
 
-    context_->setTensorAddress(input_name_.c_str(), input_tensor_.data_ptr());
-    for (size_t i = 0; i < output_names_.size(); ++i) {
-        context_->setTensorAddress(output_names_[i].c_str(), output_tensors_[i].data_ptr());
+    {
+        c10::cuda::CUDAStreamGuard stream_guard(trt_stream);
+        preprocess_bgr_u8_hwc_to_rgb_nchw(image_hwc_u8, input_tensor_);
+
+        cudaStream_t stream = trt_stream.stream();
+
+        context_->setTensorAddress(input_name_.c_str(), input_tensor_.data_ptr());
+        for (size_t i = 0; i < output_names_.size(); ++i) {
+            context_->setTensorAddress(output_names_[i].c_str(), output_tensors_[i].data_ptr());
+        }
+
+        if (!context_->enqueueV3(stream)) throw std::runtime_error("TensorRT enqueueV3 failed");
     }
 
-    if (!context_->enqueueV3(stream)) throw std::runtime_error("TensorRT enqueueV3 failed");
+    stream_wait(torch_stream.stream(), trt_stream.stream());
 
     torch::Tensor pred = output_tensors_[0];
     if (pred.dim() == 3 && pred.size(0) == 1) pred = pred.squeeze(0);

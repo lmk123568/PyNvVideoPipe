@@ -7,8 +7,7 @@ import torch
 
 
 def parser_args() -> argparse.Namespace:
-    print(
-        """
+    print("""
 ==========================================================================
 🚀 Ultralytics YOLO to TensorRT Conversion Script
    
@@ -16,8 +15,7 @@ def parser_args() -> argparse.Namespace:
    --fp16     : Enable FP16 precision. Default: False
    --device   : CUDA Device. Default: cuda:0
 ===========================================================================
-          """
-    )
+          """)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights", type=str)

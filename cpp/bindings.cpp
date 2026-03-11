@@ -66,7 +66,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
              py::arg("width"),
              py::arg("height"),
              py::arg("fps"),
-             py::arg("codec")   = "h264",
+             py::arg("codec")   = "libx264",
              py::arg("bitrate") = 2000000)
         .def("encode", &Encoder::encode, py::arg("frame"), py::arg("pts") = -1.0, py::call_guard<py::gil_scoped_release>())
         .def("finish", &Encoder::finish, py::call_guard<py::gil_scoped_release>());
