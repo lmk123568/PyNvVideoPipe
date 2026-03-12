@@ -21,7 +21,7 @@ def pkg_config(package, flag):
 
 
 # Gather FFmpeg flags
-ffmpeg_packages = ["libavcodec", "libavformat", "libavutil"]
+ffmpeg_packages = ["libavcodec", "libavformat", "libavutil", "libswscale"]
 include_dirs = []
 library_dirs = []
 libraries = ["nppicc", "nppig", "nppc"]  # NPP libraries
