@@ -7,8 +7,12 @@
     <img src="https://img.shields.io/badge/CUDA-12.8-76B900?&logo=nvidia&logoColor=white&style=for-the-badge">
     <img src="https://img.shields.io/badge/OS-Linux-FCC624?&logo=linux&logoColor=white&style=for-the-badge">
     <img src="https://img.shields.io/badge/ENV-Docker-2496ED?logo=docker&logoColor=white&style=for-the-badge">
-    <img src="https://img.shields.io/badge/Video-YouTube-FF0000?logo=youtube&logoColor=white&style=for-the-badge">
-    <img src="https://img.shields.io/badge/Video-Bilibili-FB7299?logo=bilibili&logoColor=white&style=for-the-badge">
+    <a href="https://youtu.be/-soVRjH1rb4" target="_blank">
+        <img src="https://img.shields.io/badge/Video-YouTube-FF0000?logo=youtube&logoColor=white&style=for-the-badge">
+    </a>
+    <a href="https://www.bilibili.com/video/BV12TcvzbEcZ" target="_blank">
+        <img src="https://img.shields.io/badge/Video-Bilibili-FB7299?logo=bilibili&logoColor=white&style=for-the-badge">
+    </a>
 </p>
 
 ---
