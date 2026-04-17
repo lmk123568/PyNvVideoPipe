@@ -101,5 +101,5 @@ if __name__ == "__main__":
     our_model = pvp.Yolo26DetTRT(engine_path=f, conf_thres=0.25, device_id=0)
     our_bboxes = our_model(img_bgr)[:, :4].cpu().numpy()
 
-    print(f"==> trt_bboxes:\n {trt_bboxes}")
-    print(f"==> our_bboxes:\n {our_bboxes}")
+    print(f"==> ultralytics trt_bboxes:\n {trt_bboxes}")
+    print(f"==> pvp trt_bboxes:\n {our_bboxes}")
