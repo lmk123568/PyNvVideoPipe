@@ -20,29 +20,29 @@ class Pipeline(mp.Process):
         import pvp
 
         decoder = pvp.Decoder(
-            self.input_url,  # Input URL or file path
-            enable_frame_skip=False,  # Whether to skip frames
-            output_width=1024,  # Output width for video decoder
-            output_height=576,  # Output height for video decoder
-            enable_auto_reconnect=True,  # Whether to enable auto reconnection
-            reconnect_delay_ms=2000,  # Delay between reconnections in milliseconds
-            max_reconnects=3,  # Maximum number of reconnections before giving up
-            open_timeout_ms=5000,  # Timeout for opening the stream
-            read_timeout_ms=5000,  # Timeout for reading packets
-            buffer_size=4 * 1024 * 1024,  # 4MB buffer for jitter tolerance
-            max_delay_ms=200,  # Max allowed decoding delay
-            reorder_queue_size=4,  # B-frame reorder queue length
-            decoder_threads=1,  # Number of decoder threads
-            surfaces=3,  # Number of CUDA surfaces for buffering
+            self.input_url,  # 输入 URL 或文件路径
+            enable_frame_skip=False,  # 是否跳帧
+            output_width=1024,  # 解码输出宽度
+            output_height=576,  # 解码输出高度
+            enable_auto_reconnect=True,  # 是否启用自动重连
+            reconnect_delay_ms=2000,  # 重连间隔（毫秒）
+            max_reconnects=5,  # 最大重连次数，超过后放弃
+            open_timeout_ms=5000,  # 打开流超时（毫秒）
+            read_timeout_ms=5000,  # 读取数据包超时（毫秒）
+            buffer_size=4 * 1024 * 1024,  # 4MB 缓冲区，用于抖动容忍
+            max_delay_ms=200,  # 允许的最大解码延迟（毫秒）
+            reorder_queue_size=4,  # B 帧重排队列长度
+            decoder_threads=1,  # 解码线程数
+            surfaces=3,  # 用于缓冲的 CUDA surface 数量
         )
 
         encoder = pvp.Encoder(
-            output_url=self.output_url,  # Output URL or file path
-            width=decoder.get_width(),  # Output width for video encoder
-            height=decoder.get_height(),  # Output height for video encoder
-            fps=25,  # Output frame rate for video encoder
-            codec="libx264",  # Video codec for encoding
-            bitrate=1000000,  # Target bitrate for encoding in kbps
+            output_url=self.output_url,  # 输出 URL 或文件路径
+            width=decoder.get_width(),  # 编码输出宽度
+            height=decoder.get_height(),  # 编码输出高度
+            fps=25,  # 编码输出帧率
+            codec="libx264",  # 编码使用的视频编码器
+            bitrate=1000000,  # 编码目标码率（kbps）
         )
 
         det = pvp.Yolo26DetTRT(
@@ -51,16 +51,16 @@ class Pipeline(mp.Process):
             device_id=0,
         )
 
-        # The following example shows how to chain additional GPU models for further inference
-        # without ever copying frame data back to the CPU.
-        # Make sure every model’s inputs/outputs stay as GPU tensors to avoid any CPU <-> GPU transfers.
-        # For instance:
+        # 下面示例展示如何串联更多 GPU 模型做进一步推理，
+        # 且全程不把帧数据拷回 CPU。
+        # 请确保各模型输入/输出都保持为 GPU 张量，以避免 CPU <-> GPU 传输。
+        # 例如：
         # import ultralytics
-        # cls = ultralytics.YOLO("./yolo26n-cls.engine").to("cuda")   # load model on GPU
+        # cls = ultralytics.YOLO("./yolo26n-cls.engine").to("cuda")   # 在 GPU 上加载模型
         # seg = ultralytics.YOLO("./yolo26n-seg.engine").to("cuda")
         # pose = ultralytics.YOLO("./yolo26n-pose.engine").to("cuda")
 
-        # Supervision annotators and tracker for visualization
+        # 用于可视化的 Supervision 标注器和跟踪器
         tracker = sv.ByteTrack()
         box_annotator = sv.BoxAnnotator()
         label_annotator = sv.LabelAnnotator()
@@ -77,9 +77,8 @@ class Pipeline(mp.Process):
         while 1:
             t0 = time.time()
 
-            
             try:
-                # Fetch next decoded frame; pts is presentation timestamp
+                # 读取下一帧解码结果；pts 为显示时间戳
                 frame, pts = decoder.next_frame()
             except Exception as e:
                 if str(self.input_url).startswith(("rtsp://")):
@@ -93,49 +92,49 @@ class Pipeline(mp.Process):
 
             t1 = time.time()
 
-            try:
-                det_results = det(frame)
+            det_results = det(frame)
 
-                t2 = time.time()
+            t2 = time.time()
 
-                det_results = det_results.cpu().numpy()
-                det_results = sv.Detections(
-                    xyxy=det_results[:, :4],
-                    confidence=det_results[:, 4],
-                    class_id=det_results[:, 5].astype(int),
+            det_results = det_results.cpu().numpy()
+            det_results = sv.Detections(
+                xyxy=det_results[:, :4],
+                confidence=det_results[:, 4],
+                class_id=det_results[:, 5].astype(int),
+            )
+            tracker_results = tracker.update_with_detections(det_results)
+
+            t3 = time.time()
+
+            annotated_frame = frame.cpu().numpy()
+
+            labels = [
+                f"#{tracker_id} {class_id}"
+                for tracker_id, class_id in zip(
+                    tracker_results.tracker_id, tracker_results.class_id
                 )
-                tracker_results = tracker.update_with_detections(det_results)
-                t3 = time.time()
+            ]
 
-                annotated_frame = frame.cpu().numpy()
+            annotated_frame = box_annotator.annotate(
+                scene=annotated_frame, detections=tracker_results
+            )
+            annotated_frame = trace_annotator.annotate(
+                scene=annotated_frame, detections=tracker_results
+            )
+            annotated_frame = label_annotator.annotate(
+                scene=annotated_frame, detections=tracker_results, labels=labels
+            )
 
-                labels = [
-                    f"#{tracker_id} {class_id}"
-                    for tracker_id, class_id in zip(
-                        tracker_results.tracker_id, tracker_results.class_id
-                    )
-                ]
+            t4 = time.time()
 
-                annotated_frame = box_annotator.annotate(
-                    scene=annotated_frame, detections=tracker_results
-                )
-                annotated_frame = trace_annotator.annotate(
-                    scene=annotated_frame, detections=tracker_results
-                )
-                annotated_frame = label_annotator.annotate(
-                    scene=annotated_frame, detections=tracker_results, labels=labels
-                )
-                t4 = time.time()
+            annotated_frame = torch.from_numpy(annotated_frame)
+            encoder.encode(annotated_frame, pts)
 
-                annotated_frame = torch.from_numpy(annotated_frame)
-                encoder.encode(annotated_frame, pts)
-                t5 = time.time()
+            t5 = time.time()
 
-                t6 = time.time()
+            # 业务逻辑
 
-            except Exception as e:
-                print(f"[main.py] {self.input_url} 当前帧推理异常, 已跳过: {e}")
-                continue
+            t6 = time.time()
 
             sum_wait += t1 - t0
             sum_det += t2 - t1
@@ -164,8 +163,8 @@ class Pipeline(mp.Process):
 
 
 if __name__ == "__main__":
-    # You can move this list into a separate YAML file and load it with PyYAML or similar.
-    # Example:
+    # 你可以将该列表移到独立的 YAML 文件中，并通过 PyYAML 等方式加载。
+    # 示例：
     #   import yaml
     #   with open("streams.yaml", "r", encoding="utf-8") as f:
     #       args = yaml.safe_load(f)
@@ -192,10 +191,10 @@ if __name__ == "__main__":
         },
     ]
 
-    # Use the 'spawn' start method to avoid CUDA context inheritance issues,
-    # ensuring that each subprocess initializes CUDA independently.
-    # When used with NVIDIA MPS (Multi-Process Service), spawn mode enables
-    # multiple processes to share the same GPU compute resources, improving concurrency efficiency.
+    # 使用 'spawn' 启动方式可避免 CUDA 上下文继承问题，
+    # 确保每个子进程独立初始化 CUDA。
+    # 配合 NVIDIA MPS（多进程服务）时，spawn 模式可让
+    # 多个进程共享同一块 GPU 的计算资源，提升并发效率。
     mp.set_start_method("spawn")
     process_pool = []
     for i in args:
