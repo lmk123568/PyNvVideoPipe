@@ -79,6 +79,7 @@ private:
     std::string hwaccel             = "cuda";
     int         reconnect_attempts  = 0;
     bool        is_streaming_source = false;
+    int         bad_frame_streak    = 0;
     double      last_input_pts      = -1.0;
     double      last_output_pts     = -1.0;
     double      nominal_frame_delta = 0.0;

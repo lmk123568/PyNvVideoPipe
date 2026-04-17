@@ -2,6 +2,7 @@
 
 #include <c10/cuda/CUDAStream.h>
 #include <cuda_runtime.h>
+#include <libavutil/error.h>
 #include <libavutil/rational.h>
 #include <npp.h>
 #include <nppi_color_conversion.h>
@@ -10,13 +11,30 @@
 #include <stdexcept>
 #include <thread>
 
+static std::string ff_err(int ret) {
+    char buf[AV_ERROR_MAX_STRING_SIZE];
+    av_strerror(ret, buf, sizeof(buf));
+    return std::string(buf);
+}
+
+static void sync_stream_throw(cudaStream_t stream) {
+    cudaError_t err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+        throw std::runtime_error(std::string("[Decoder] CUDA流同步失败: ") + cudaGetErrorString(err));
+    }
+}
+
+static void sync_stream_noexcept(cudaStream_t stream) {
+    cudaStreamSynchronize(stream);
+}
+
 static enum AVPixelFormat get_hw_format(AVCodecContext* ctx, const enum AVPixelFormat* pix_fmts) {
     const enum AVPixelFormat* p;
     for (p = pix_fmts; *p != -1; p++) {
         if (*p == AV_PIX_FMT_CUDA)
             return *p;
     }
-    throw std::runtime_error("[Decoder] Failed to get HW surface format.");
+    throw std::runtime_error("[Decoder] 无法获取硬件解码表面格式");
 }
 
 Decoder::Decoder(const std::string& filename,
@@ -50,7 +68,16 @@ Decoder::Decoder(const std::string& filename,
       decoder_threads(decoder_threads_),
       surfaces(surfaces_),
       hwaccel(std::move(hwaccel_)) {
-    init_ffmpeg(filename);
+    try {
+        init_ffmpeg(filename);
+    } catch (const std::exception& e) {
+        bool is_stream = filename.rfind("rtsp://", 0) == 0 || filename.rfind("rtp://", 0) == 0;
+        if (!is_stream) {
+            throw;
+        }
+        is_streaming_source = true;
+        std::cerr << "[Decoder] 初始化流失败，进入重连模式: " << source_url << ", 原因: " << e.what() << std::endl;
+    }
 }
 
 Decoder::~Decoder() {
@@ -58,7 +85,8 @@ Decoder::~Decoder() {
 }
 
 void Decoder::init_ffmpeg(const std::string& filename) {
-    av_log_set_level(AV_LOG_INFO);
+    // 日志只报错误信息
+    av_log_set_level(AV_LOG_ERROR);
     AVDictionary* opts  = nullptr;
     is_streaming_source = false;
     if (filename.rfind("rtsp://", 0) == 0) {
@@ -90,20 +118,22 @@ void Decoder::init_ffmpeg(const std::string& filename) {
         if (opts) {
             av_dict_free(&opts);
         }
-        throw std::runtime_error("[Decoder] Could not open input file: " + filename);
+        throw std::runtime_error("[Decoder] 无法打开输入流: " + filename);
     }
     if (opts) {
         av_dict_free(&opts);
     }
 
     if (avformat_find_stream_info(format_ctx, nullptr) < 0) {
-        throw std::runtime_error("[Decoder] Could not find stream info");
+        throw std::runtime_error("[Decoder] 无法获取媒体流信息");
     }
-    av_dump_format(format_ctx, 0, filename.c_str(), 0);
+
+    // 打印媒体流信息
+    // av_dump_format(format_ctx, 0, filename.c_str(), 0);
 
     video_stream_idx = av_find_best_stream(format_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (video_stream_idx < 0) {
-        throw std::runtime_error("[Decoder] Could not find video stream");
+        throw std::runtime_error("[Decoder] 未找到视频流");
     }
 
     AVStream*          stream   = format_ctx->streams[video_stream_idx];
@@ -122,16 +152,16 @@ void Decoder::init_ffmpeg(const std::string& filename) {
 
     const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
     if (!codec) {
-        throw std::runtime_error("[Decoder] Codec not found");
+        throw std::runtime_error("[Decoder] 未找到视频解码器");
     }
 
     codec_ctx = avcodec_alloc_context3(codec);
     if (!codec_ctx) {
-        throw std::runtime_error("[Decoder] Could not allocate codec context");
+        throw std::runtime_error("[Decoder] 无法分配解码器上下文");
     }
 
     if (avcodec_parameters_to_context(codec_ctx, codecpar) < 0) {
-        throw std::runtime_error("[Decoder] Could not copy codec params");
+        throw std::runtime_error("[Decoder] 无法复制解码器参数");
     }
 
     if (decoder_threads <= 0) {
@@ -145,7 +175,7 @@ void Decoder::init_ffmpeg(const std::string& filename) {
 
     if (hwaccel == "cuda") {
         if (av_hwdevice_ctx_create(&hw_device_ctx, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0) < 0) {
-            throw std::runtime_error("[Decoder] Failed to create CUDA HW device");
+            throw std::runtime_error("[Decoder] 创建 CUDA 硬件解码设备失败");
         }
         codec_ctx->hw_device_ctx   = av_buffer_ref(hw_device_ctx);
         codec_ctx->get_format      = get_hw_format;
@@ -153,7 +183,15 @@ void Decoder::init_ffmpeg(const std::string& filename) {
     }
 
     if (avcodec_open2(codec_ctx, codec, nullptr) < 0) {
-        throw std::runtime_error("[Decoder] Could not open codec");
+        throw std::runtime_error("[Decoder] 打开解码器失败");
+    }
+
+    if (codec_ctx->hw_frames_ctx) {
+        AVHWFramesContext* frames_ctx = reinterpret_cast<AVHWFramesContext*>(codec_ctx->hw_frames_ctx->data);
+        if (frames_ctx) {
+            int pool_size = frames_ctx->initial_pool_size;
+            std::cerr << "[Decoder] 当前硬件解码帧池大小: " << source_url << ", 大小: " << pool_size << std::endl;
+        }
     }
 
     decode_width  = codec_ctx->width;
@@ -173,6 +211,9 @@ void Decoder::init_ffmpeg(const std::string& filename) {
 }
 
 void Decoder::cleanup() {
+    if (frame) av_frame_unref(frame);
+    if (packet) av_packet_unref(packet);
+    if (codec_ctx) avcodec_flush_buffers(codec_ctx);
     if (frame) av_frame_free(&frame);
     if (packet) av_packet_free(&packet);
     if (codec_ctx) avcodec_free_context(&codec_ctx);
@@ -184,10 +225,18 @@ bool Decoder::try_reconnect() {
     if (!enable_reconnect || !is_streaming_source) return false;
     while (max_reconnects == 0 || reconnect_attempts < max_reconnects) {
         reconnect_attempts += 1;
+        // std::cerr << "[Decoder] 视频流断线中，正在重拉("
+        //           << reconnect_attempts
+        //           << "/"
+        //           << (max_reconnects == 0 ? std::string("无限") : std::to_string(max_reconnects))
+        //           << "): "
+        //           << source_url
+        //           << std::endl;
         cleanup();
         flushing          = false;
         finished          = false;
         output_this_frame = true;
+        bad_frame_streak  = 0;
         last_input_pts    = -1.0;
         if (nominal_frame_delta <= 0.0 && fps > 0.0) {
             nominal_frame_delta = 1.0 / fps;
@@ -195,11 +244,14 @@ bool Decoder::try_reconnect() {
         std::this_thread::sleep_for(std::chrono::milliseconds(reconnect_delay_ms));
         try {
             init_ffmpeg(source_url);
+            // std::cerr << "[Decoder] 重连成功: " << source_url << std::endl;
             return true;
-        } catch (const std::exception&) {
+        } catch (const std::exception& e) {
+            // std::cerr << "[Decoder] 重连失败: " << source_url << ", 原因: " << e.what() << std::endl;
             continue;
         }
     }
+    // std::cerr << "[Decoder] 连续重连失败" << reconnect_attempts << "次，判定无信号: " << source_url << std::endl;
     return false;
 }
 
@@ -243,87 +295,112 @@ double Decoder::align_pts(double pts) {
 }
 
 std::pair<torch::Tensor, double> Decoder::next_frame() {
+    if (!codec_ctx || !format_ctx || !frame || !packet) {
+        if (!try_reconnect()) {
+            throw std::runtime_error("[Decoder] 无信号，重连3次失败");
+        }
+    }
+
     auto process_frame = [&](AVFrame* f) -> torch::Tensor {
         if (f->format != AV_PIX_FMT_CUDA) {
-            std::cerr << "[Decoder] Frame format is not CUDA: " << f->format << std::endl;
-            return torch::Tensor();
+            throw std::runtime_error("[Decoder] 帧像素格式不是 CUDA: " + std::to_string(f->format));
+        }
+        if (!f->data[0] || !f->data[1] || f->linesize[0] <= 0) {
+            throw std::runtime_error("[Decoder] NV12 硬件帧数据无效");
         }
 
-        cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
+        int frame_w = f->width > 0 ? f->width : decode_width;
+        int frame_h = f->height > 0 ? f->height : decode_height;
+        if (frame_w <= 0 || frame_h <= 0) {
+            throw std::runtime_error("[Decoder] 无效的帧尺寸");
+        }
+        if (frame_w != decode_width || frame_h != decode_height) {
+            decode_width  = frame_w;
+            decode_height = frame_h;
+            if (requested_width <= 0 || requested_height <= 0) {
+                width  = decode_width;
+                height = decode_height;
+            }
+            std::cerr << "[Decoder] 检测到分辨率变化: " << source_url << ", 新分辨率: " << decode_width << "x" << decode_height << std::endl;
+        }
+
+        cudaStream_t     stream = c10::cuda::getCurrentCUDAStream().stream();
         NppStreamContext npp_stream_ctx;
-        NppStatus npp_stream_status = nppGetStreamContext(&npp_stream_ctx);
+        NppStatus        npp_stream_status = nppGetStreamContext(&npp_stream_ctx);
         if (npp_stream_status != NPP_SUCCESS) {
-            throw std::runtime_error("[Decoder] nppGetStreamContext failed: " + std::to_string(npp_stream_status));
+            throw std::runtime_error("[Decoder] nppGetStreamContext 失败, 错误码: " + std::to_string(npp_stream_status));
         }
         npp_stream_ctx.hStream = stream;
 
         auto          options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA).layout(torch::kStrided);
-        torch::Tensor bgr     = torch::empty({decode_height, decode_width, 3}, options);
+        torch::Tensor bgr     = torch::empty({frame_h, frame_w, 3}, options);
         const Npp8u*  pSrc[2];
         pSrc[0]           = (const Npp8u*)f->data[0];
         pSrc[1]           = (const Npp8u*)f->data[1];
         int      nSrcStep = f->linesize[0];
         Npp8u*   pDst     = bgr.data_ptr<uint8_t>();
-        int      nDstStep = decode_width * 3;
+        int      nDstStep = static_cast<int>(bgr.stride(0) * bgr.element_size());
         NppiSize oSizeROI;
-        oSizeROI.width   = decode_width;
-        oSizeROI.height  = decode_height;
+        oSizeROI.width   = frame_w;
+        oSizeROI.height  = frame_h;
         NppStatus status = nppiNV12ToBGR_8u_P2C3R_Ctx(pSrc, nSrcStep, pDst, nDstStep, oSizeROI, npp_stream_ctx);
         if (status != NPP_SUCCESS) {
-            throw std::runtime_error("[Decoder] NPP conversion failed: " + std::to_string(status));
+            throw std::runtime_error("[Decoder] NPP NV12→BGR 颜色转换失败, 错误码: " + std::to_string(status));
         }
 
-        if (width == decode_width && height == decode_height) {
-            return bgr;
+        torch::Tensor out = bgr;
+        if (width != frame_w || height != frame_h) {
+            torch::Tensor resized    = torch::empty({height, width, 3}, options);
+            const Npp8u*  pResizeSrc = bgr.data_ptr<uint8_t>();
+            Npp8u*        pResizeDst = resized.data_ptr<uint8_t>();
+
+            NppiSize srcSize;
+            srcSize.width  = frame_w;
+            srcSize.height = frame_h;
+            int srcStep    = static_cast<int>(bgr.stride(0) * bgr.element_size());
+            int dstStep    = static_cast<int>(resized.stride(0) * resized.element_size());
+
+            NppiRect srcROI;
+            srcROI.x      = 0;
+            srcROI.y      = 0;
+            srcROI.width  = frame_w;
+            srcROI.height = frame_h;
+
+            NppiRect dstROI;
+            dstROI.x      = 0;
+            dstROI.y      = 0;
+            dstROI.width  = width;
+            dstROI.height = height;
+
+            double xFactor = static_cast<double>(width) / static_cast<double>(frame_w);
+            double yFactor = static_cast<double>(height) / static_cast<double>(frame_h);
+
+            NppStatus resize_status = nppiResizeSqrPixel_8u_C3R_Ctx(
+                pResizeSrc,
+                srcSize,
+                srcStep,
+                srcROI,
+                pResizeDst,
+                dstStep,
+                dstROI,
+                xFactor,
+                yFactor,
+                0.0,
+                0.0,
+                NPPI_INTER_LINEAR,
+                npp_stream_ctx);
+            if (resize_status != NPP_SUCCESS) {
+                throw std::runtime_error("[Decoder] NPP 尺寸缩放失败, 错误码: " + std::to_string(resize_status));
+            }
+            out = resized;
         }
-
-        torch::Tensor resized    = torch::empty({height, width, 3}, options);
-        const Npp8u*  pResizeSrc = bgr.data_ptr<uint8_t>();
-        Npp8u*        pResizeDst = resized.data_ptr<uint8_t>();
-
-        NppiSize srcSize;
-        srcSize.width  = decode_width;
-        srcSize.height = decode_height;
-        int srcStep    = decode_width * 3;
-        int dstStep    = width * 3;
-
-        NppiRect srcROI;
-        srcROI.x      = 0;
-        srcROI.y      = 0;
-        srcROI.width  = decode_width;
-        srcROI.height = decode_height;
-
-        NppiRect dstROI;
-        dstROI.x      = 0;
-        dstROI.y      = 0;
-        dstROI.width  = width;
-        dstROI.height = height;
-
-        double xFactor = static_cast<double>(width) / static_cast<double>(decode_width);
-        double yFactor = static_cast<double>(height) / static_cast<double>(decode_height);
-
-        NppStatus resize_status = nppiResizeSqrPixel_8u_C3R_Ctx(
-            pResizeSrc,
-            srcSize,
-            srcStep,
-            srcROI,
-            pResizeDst,
-            dstStep,
-            dstROI,
-            xFactor,
-            yFactor,
-            0.0,
-            0.0,
-            NPPI_INTER_LINEAR,
-            npp_stream_ctx);
-        if (resize_status != NPP_SUCCESS) {
-            throw std::runtime_error("[Decoder] NPP resize failed: " + std::to_string(resize_status));
-        }
-
-        return resized;
+        sync_stream_throw(stream);
+        return out;
     };
 
-    if (finished) return {torch::Tensor(), -1.0};
+    if (finished) {
+        throw std::runtime_error("[Decoder] 视频流已结束或无可用信号");
+    }
 
     while (true) {
         int ret = avcodec_receive_frame(codec_ctx, frame);
@@ -343,7 +420,39 @@ std::pair<torch::Tensor, double> Decoder::next_frame() {
             }
             pts = align_pts(pts);
 
-            torch::Tensor out = process_frame(frame);
+            torch::Tensor out;
+            try {
+                out = process_frame(frame);
+            } catch (const std::exception& e) {
+                sync_stream_noexcept(c10::cuda::getCurrentCUDAStream().stream());
+                std::cerr << "[Decoder] 异常帧已跳过: " << source_url << ", 原因: " << e.what() << std::endl;
+                bad_frame_streak += 1;
+                av_frame_unref(frame);
+                if (bad_frame_streak >= 5) {
+                    std::cerr << "[Decoder] 连续异常帧过多，执行重拉恢复: " << source_url << std::endl;
+                    if (try_reconnect()) {
+                        continue;
+                    }
+                    finished = true;
+                    return {torch::Tensor(), -1.0};
+                }
+                continue;
+            } catch (...) {
+                sync_stream_noexcept(c10::cuda::getCurrentCUDAStream().stream());
+                std::cerr << "[Decoder] 异常帧已跳过: " << source_url << ", 原因: 未知异常" << std::endl;
+                bad_frame_streak += 1;
+                av_frame_unref(frame);
+                if (bad_frame_streak >= 5) {
+                    std::cerr << "[Decoder] 连续异常帧过多，执行重拉恢复: " << source_url << std::endl;
+                    if (try_reconnect()) {
+                        continue;
+                    }
+                    finished = true;
+                    return {torch::Tensor(), -1.0};
+                }
+                continue;
+            }
+            bad_frame_streak = 0;
             av_frame_unref(frame);
             return {out, pts};
         } else if (ret == AVERROR_EOF) {
@@ -351,33 +460,61 @@ std::pair<torch::Tensor, double> Decoder::next_frame() {
                 continue;
             }
             finished = true;
-            return {torch::Tensor(), -1.0};
+            throw std::runtime_error("[Decoder] 无信号，重连3次失败");
         } else if (ret != AVERROR(EAGAIN)) {
-            throw std::runtime_error("[Decoder] Error receiving frame: " + std::to_string(ret));
+            if (ret == AVERROR_INVALIDDATA) {
+                std::cerr << "[Decoder] 接收解码帧无效，已跳过当前帧: " << source_url << std::endl;
+                continue;
+            }
+            std::cerr << "[Decoder] 接收解码帧失败: " << source_url << ", 原因: " << ff_err(ret) << std::endl;
+            if (try_reconnect()) {
+                continue;
+            }
+            finished = true;
+            throw std::runtime_error("[Decoder] 无信号，重连3次失败");
         }
 
         if (flushing) {
             finished = true;
-            return {torch::Tensor(), -1.0};
+            throw std::runtime_error("[Decoder] 视频流已结束或无可用信号");
         }
 
         ret = av_read_frame(format_ctx, packet);
         if (ret < 0) {
+            std::cerr << "[Decoder] 读取视频包失败: " << source_url << ", 原因: " << ff_err(ret) << std::endl;
             if (try_reconnect()) {
                 continue;
             }
-            flushing = true;
-            avcodec_send_packet(codec_ctx, nullptr);
+            flushing      = true;
+            int flush_ret = avcodec_send_packet(codec_ctx, nullptr);
+            if (flush_ret < 0) {
+                std::cerr << "[Decoder] 刷新解码器失败: " << source_url << ", 原因: " << ff_err(flush_ret) << std::endl;
+                finished = true;
+                throw std::runtime_error("[Decoder] 无信号，重连3次失败");
+            }
             continue;
         }
 
         if (packet->stream_index == video_stream_idx) {
             ret = avcodec_send_packet(codec_ctx, packet);
             av_packet_unref(packet);
-            if (ret < 0) throw std::runtime_error("[Decoder] Error sending packet");
+            if (ret < 0) {
+                if (ret == AVERROR_INVALIDDATA) {
+                    std::cerr << "[Decoder] 无效视频包已丢弃: " << source_url << std::endl;
+                    continue;
+                }
+                if (ret == AVERROR(EAGAIN)) {
+                    continue;
+                }
+                std::cerr << "[Decoder] 发送视频包到解码器失败: " << source_url << ", 原因: " << ff_err(ret) << std::endl;
+                if (try_reconnect()) {
+                    continue;
+                }
+                finished = true;
+                throw std::runtime_error("[Decoder] 无信号，重连3次失败");
+            }
         } else {
             av_packet_unref(packet);
         }
     }
 }
-

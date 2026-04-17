@@ -9,8 +9,6 @@
 #include <string>
 #include <vector>
 
-#include "bgr_to_nv12.h"
-
 extern "C" {
 #include <libavutil/error.h>
 #include <libswscale/swscale.h>
@@ -153,13 +151,13 @@ void Encoder::cleanup() {
     if (hw_device_ctx) av_buffer_unref(&hw_device_ctx);
     if (sws_ctx) sws_freeContext(sws_ctx);
 
-    format_ctx        = nullptr;
-    codec_ctx         = nullptr;
-    hw_device_ctx     = nullptr;
-    video_stream      = nullptr;
-    packet            = nullptr;
-    frame             = nullptr;
-    sws_ctx           = nullptr;
+    format_ctx         = nullptr;
+    codec_ctx          = nullptr;
+    hw_device_ctx      = nullptr;
+    video_stream       = nullptr;
+    packet             = nullptr;
+    frame              = nullptr;
+    sws_ctx            = nullptr;
     ffmpeg_cuda_stream = nullptr;
 }
 

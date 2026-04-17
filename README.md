@@ -77,7 +77,8 @@ docker run -it \
 ### 2. 编译加速包
 
 ```bash
-python scripts/setup.py install
+python install .
+# python install -e .  # 开发模式
 ```
 
 这里面包含了硬件编解码、YOLO26 推理优化的 C++ 实现，并通过 Pybind11 给 Python 调用
@@ -87,7 +88,7 @@ python scripts/setup.py install
 将通过 [ultralytics](https://github.com/ultralytics/ultralytics) 训练的`pt`模型导入到当前目录（`/workspace`）下（示例模型为 [yolo26n.pt](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.pt)）
 
 ```bash
-python scripts/pt2trt.py  --w ./yolo26n.pt --fp16
+python pt2trt.py  --w ./yolo26n.pt --fp16
 ```
 
  转换过程中会与 ultralytics 官方结果进行推理对齐

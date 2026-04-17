@@ -5,6 +5,7 @@ from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension, library_paths
 
 MODULE_NAME = "pvp"
+MODULE_VERSION = "0.1.1"
 
 os.environ.setdefault("CC", "gcc")
 os.environ.setdefault("CXX", "g++")
@@ -64,13 +65,13 @@ print(f"Libraries: {libraries}")
 
 setup(
     name=MODULE_NAME,
+    version=MODULE_VERSION,
     ext_modules=[
         CUDAExtension(
             MODULE_NAME,
             [
                 "cpp/src/Decoder.cpp",
                 "cpp/src/Encoder.cpp",
-                "cpp/src/bgr_to_nv12.cu",
                 "cpp/src/Yolo26DetTRT.cpp",
                 "cpp/src/preprocess.cu",
                 "cpp/bindings.cpp",
